@@ -36,7 +36,7 @@ npm install
 PORT=5000
 MONGODB_URI=mongodb://localhost:27017/crypto-crash
 JWT_SECRET=your_jwt_secret_here
-COINMARKETCAP_API_KEY=48ad48b9-ac62-49c3-a4e4-0a44f4bf8fa3
+COINMARKETCAP_API_KEY=your_coinmarketcap_api_key_here
 ```
 
 4. Start the server:
