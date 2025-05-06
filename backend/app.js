@@ -1,8 +1,14 @@
 import express from 'express';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import authRoutes from './routes/authRoutes.js';
 import gameRoutes from './routes/gameRoutes.js';
 import walletRoutes from './routes/walletRoutes.js';
+
+// Get __dirname equivalent in ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 
@@ -17,6 +23,14 @@ app.use(cors({
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Serve static files from the public directory
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Route to serve the WebSocket test client
+app.get('/test', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'test-client.html'));
+});
 
 // Routes
 app.use('/api/auth', authRoutes);

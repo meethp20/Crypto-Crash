@@ -3,6 +3,7 @@ import Transaction from '../models/Transaction.js';
 import User from '../models/User.js';
 import { generateGameData } from '../utils/provablyFair.js';
 import crypto from 'crypto';
+import mongoose from 'mongoose';
 
 // Global game state
 let currentGame = {
@@ -55,17 +56,44 @@ const getCurrentGameState = () => {
  */
 const initializeGameLoop = async (io) => {
   try {
+    console.log('Initializing game loop...');
+    
+    // Check database connection before proceeding
+    if (mongoose.connection.readyState !== 1) {
+      console.warn('MongoDB not connected. Waiting for connection...');
+      // Wait for database connection before continuing
+      setTimeout(() => initializeGameLoop(io), 3000);
+      return;
+    }
+    
     // Find the highest roundId in the database to continue from there
-    const lastGame = await GameRound.findOne().sort({ roundId: -1 });
+    const lastGame = await GameRound.findOne().sort({ roundId: -1 }).maxTimeMS(5000);
     if (lastGame) {
       nextRoundId = lastGame.roundId + 1;
+      console.log(`Continuing from round ID: ${nextRoundId}`);
+    } else {
+      nextRoundId = 1;
+      console.log('Starting with first round');
     }
     
     // Start the game loop
     await startNextRound(io);
   } catch (error) {
     console.error('Error initializing game loop:', error);
+    
+    // Provide more detailed error information
+    if (error.name === 'MongooseError' || error.name === 'MongoError') {
+      console.error('Database error. Check MongoDB connection.');
+    }
+    
+    // Notify clients about the initialization error
+    io.emit('gameUpdate', {
+      type: 'error',
+      message: 'Game initialization error. Please try again later.'
+    });
+    
     // Retry after a delay
+    console.log('Retrying game initialization in 5 seconds...');
     setTimeout(() => initializeGameLoop(io), 5000);
   }
 };
@@ -197,21 +225,79 @@ const endRound = async (io, finalMultiplier) => {
     // Update game status
     currentGame.status = 'crashed';
     currentGame.endTime = new Date();
-    await currentGame.save();
     
-    // Emit crash event
+    // Process all bets that didn't cash out (they lost)
+    const session = await mongoose.startSession();
+    await session.withTransaction(async () => {
+      // Get all bets that didn't cash out
+      const activeBets = currentGame.bets.filter(bet => !bet.hashedOut);
+      
+      console.log(`Processing ${activeBets.length} lost bets for round ${currentGame.roundId}`);
+      
+      // Create transaction records for all lost bets
+      if (activeBets.length > 0) {
+        const transactions = activeBets.map(bet => ({
+          userId: bet.userId,
+          roundId: currentGame.roundId,
+          usdAmount: -bet.usdAmount, // Negative amount for losses
+          cryptoAmount: -bet.cryptoAmount,
+          cryptoCurrency: bet.cryptoCurrency,
+          priceAtTime: bet.priceAtBet,
+          transactionType: 'bet',
+          multiplier: 0, // Lost, so multiplier is 0
+          transactionHash: crypto.randomBytes(32).toString('hex')
+        }));
+        
+        // Save all transactions in bulk
+        await Transaction.insertMany(transactions, { session });
+      }
+      
+      // Save the updated game
+      await currentGame.save({ session });
+    });
+    
+    session.endSession();
+    
+    // Emit crash event with proof data for verification
     io.emit('gameUpdate', {
       type: 'round_crashed',
       roundId: currentGame.roundId,
       crashPoint: currentGame.crashPoint,
       finalMultiplier: parseFloat(finalMultiplier.toFixed(2)),
-      seed: currentGame.seed // Reveal seed for verification
+      seed: currentGame.seed, // Reveal seed for verification
+      timestamp: new Date(),
+      // Add proof data for client verification
+      proof: {
+        seed: currentGame.seed,
+        hash: currentGame.hash,
+        formula: `crashPoint = ${1 - 0.01} / (1 - hashToFloat('${currentGame.hash}'))`
+      }
     });
     
     // Schedule the next round
     gameTimeout = setTimeout(() => startNextRound(io), ROUND_WAIT_TIME);
   } catch (error) {
     console.error('Error ending round:', error);
+    
+    // Try to save the game state even if there was an error
+    try {
+      if (currentGame) {
+        currentGame.status = 'crashed';
+        currentGame.endTime = new Date();
+        await currentGame.save();
+      }
+    } catch (saveError) {
+      console.error('Error saving game after crash:', saveError);
+    }
+    
+    // Notify clients about the error
+    io.emit('gameUpdate', {
+      type: 'error',
+      message: 'Game crashed due to an error',
+      roundId: currentGame?.roundId
+    });
+    
+    // Schedule the next round
     gameTimeout = setTimeout(() => startNextRound(io), ROUND_WAIT_TIME);
   }
 };
@@ -222,16 +308,25 @@ const endRound = async (io, finalMultiplier) => {
  * @returns {Promise<Object>} Bet details
  */
 const placeBet = async (betData) => {
+  // Start a MongoDB session for transaction
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
   try {
     console.log('Placing bet with data:', betData);
 
-    // Validate current game state
+    // Validate current game state with detailed logging
     if (!currentGame) {
+      console.error('No active game found when placing bet');
       throw new Error('No active game found');
     }
 
+    console.log('Current game status when placing bet:', currentGame.status);
+    
+    // Only allow bets during the waiting period
     if (currentGame.status !== 'waiting') {
-      throw new Error('Game is not accepting bets at this moment');
+      console.error(`Bet rejected: Game status is ${currentGame.status}, not 'waiting'`);
+      throw new Error(`Game is not accepting bets at this moment. Current status: ${currentGame.status}`);
     }
 
     // Validate bet amount
@@ -261,21 +356,33 @@ const placeBet = async (betData) => {
       currentGame.bets = [];
     }
 
-    try {
-      currentGame.bets.push(bet);
-      await currentGame.save();
-      console.log('Bet saved successfully:', bet);
-      return bet;
-    } catch (saveError) {
-      console.error('Error saving bet:', saveError);
-      // If there's a validation error, throw a more user-friendly message
-      if (saveError.name === 'ValidationError') {
-        throw new Error('Invalid bet data. Please check your inputs.');
-      }
-      throw saveError;
-    }
+    // Add bet to current game and save with session
+    currentGame.bets.push(bet);
+    await currentGame.save({ session });
+    console.log('Bet saved successfully:', bet);
+      
+    // Create a transaction record with session
+    await Transaction.create([{
+      userId: betData.userId,
+      roundId: currentGame.roundId,
+      usdAmount: betData.usdAmount,
+      cryptoAmount: betData.cryptoAmount,
+      cryptoCurrency: betData.cryptoCurrency.toLowerCase(),
+      priceAtTime: betData.priceAtBet,
+      transactionType: 'bet',
+      transactionHash: '0x' + crypto.randomBytes(32).toString('hex')
+    }], { session });
+      
+    // Commit the transaction
+    await session.commitTransaction();
+    session.endSession();
+      
+    return bet;
   } catch (error) {
     console.error('Error placing bet:', error);
+    // Abort the transaction on error
+    await session.abortTransaction();
+    session.endSession();
     throw error;
   }
 };
@@ -287,6 +394,10 @@ const placeBet = async (betData) => {
  * @returns {Promise<Object>} Cashout details
  */
 const processCashout = async (userId, currentMultiplier) => {
+  // Start a MongoDB session for transaction
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  
   try {
     // Validate current game state
     if (!currentGame || currentGame.status !== 'running') {
@@ -314,32 +425,38 @@ const processCashout = async (userId, currentMultiplier) => {
     bet.usdPayout = usdPayout;
     bet.cryptoPayout = cryptoPayout;
     
-    // Save game state
-    await currentGame.save();
+    // Save game state with session
+    await currentGame.save({ session });
     
     // Generate mock transaction hash
     const transactionHash = '0x' + crypto.randomBytes(32).toString('hex');
     
-    // Log transaction
-    await Transaction.create({
-      userId,
-      roundId: currentGame.roundId,
-      usdAmount: usdPayout,
-      cryptoAmount: cryptoPayout,
-      cryptoCurrency: bet.cryptoCurrency,
-      priceAtTime: bet.priceAtBet,
-      transactionType: 'cashout',
-      transactionHash
-    });
+    // Log transaction with session
+    await Transaction.create([
+      {
+        userId,
+        roundId: currentGame.roundId,
+        usdAmount: usdPayout,
+        cryptoAmount: cryptoPayout,
+        cryptoCurrency: bet.cryptoCurrency,
+        priceAtTime: bet.priceAtBet,
+        transactionType: 'cashout',
+        transactionHash
+      }
+    ], { session });
     
-    // Update user's wallet
-    const user = await User.findById(userId);
+    // Update user's wallet with session
+    const user = await User.findById(userId).session(session);
     if (!user) {
       throw new Error('User not found');
     }
     
     user.wallet[bet.cryptoCurrency] += cryptoPayout;
-    await user.save();
+    await user.save({ session });
+    
+    // Commit the transaction
+    await session.commitTransaction();
+    session.endSession();
     
     return {
       roundId: currentGame.roundId,
@@ -352,6 +469,9 @@ const processCashout = async (userId, currentMultiplier) => {
     };
   } catch (error) {
     console.error('Error processing cashout:', error);
+    // Abort the transaction on error
+    await session.abortTransaction();
+    session.endSession();
     throw error;
   }
 };

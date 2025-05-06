@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crypto Crash WebSocket Test Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #1a1a2e;
+            color: #e6e6e6;
+        }
+        h1 {
+            color: #ff9900;
+            text-align: center;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .card {
+            background-color: #16213e;
+            border-radius: 8px;
+            padding: 15px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+            margin-bottom: 20px;
+        }
+        .multiplier {
+            font-size: 48px;
+            font-weight: bold;
+            text-align: center;
+            color: #ff9900;
+            margin: 20px 0;
+        }
+        .running {
+            color: #4caf50;
+        }
+        .crashed {
+            color: #f44336;
+        }
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        button {
+            background-color: #ff9900;
+            color: #000;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        button:hover {
+            background-color: #ffaa33;
+        }
+        button:disabled {
+            background-color: #555;
+            cursor: not-allowed;
+        }
+        input, select {
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid #333;
+            background-color: #2c3e50;
+            color: white;
+        }
+        #log {
+            height: 300px;
+            overflow-y: auto;
+            background-color: #0d1117;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            margin-top: 20px;
+        }
+        .log-entry {
+            margin-bottom: 5px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 5px;
+        }
+        .error {
+            color: #f44336;
+        }
+        .success {
+            color: #4caf50;
+        }
+        .info {
+            color: #2196f3;
+        }
+        .prices {
+            display: flex;
+            justify-content: space-around;
+            margin-bottom: 15px;
+        }
+        .price-item {
+            text-align: center;
+        }
+        .price-value {
+            font-weight: bold;
+            color: #4caf50;
+        }
+    </style>
+</head>
+<body>
+    <h1>Crypto Crash WebSocket Test Client</h1>
+    
+    <div class="container">
+        <div class="card">
+            <h2>Game Status</h2>
+            <div class="prices">
+                <div class="price-item">
+                    <div>BTC Price:</div>
+                    <div id="btc-price" class="price-value">$0.00</div>
+                </div>
+                <div class="price-item">
+                    <div>ETH Price:</div>
+                    <div id="eth-price" class="price-value">$0.00</div>
+                </div>
+            </div>
+            
+            <div id="game-status">Waiting for connection...</div>
+            <div id="multiplier" class="multiplier">1.00x</div>
+            
+            <div class="controls">
+                <select id="crypto-select">
+                    <option value="btc">Bitcoin (BTC)</option>
+                    <option value="eth">Ethereum (ETH)</option>
+                </select>
+                
+                <input type="number" id="bet-amount" placeholder="Bet amount in USD" min="1" step="1" value="100">
+                
+                <button id="place-bet-btn">Place Bet</button>
+                <button id="cashout-btn" disabled>Cash Out</button>
+            </div>
+        </div>
+        
+        <div class="card">
+            <h2>Connection</h2>
+            <div class="controls">
+                <input type="text" id="server-url" value="http://localhost:5001" placeholder="Server URL">
+                <button id="connect-btn">Connect</button>
+                <button id="disconnect-btn" disabled>Disconnect</button>
+            </div>
+            
+            <h3>Events</h3>
+            <div id="log"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        // DOM Elements
+        const serverUrlInput = document.getElementById('server-url');
+        const connectBtn = document.getElementById('connect-btn');
+        const disconnectBtn = document.getElementById('disconnect-btn');
+        const logContainer = document.getElementById('log');
+        const multiplierDisplay = document.getElementById('multiplier');
+        const gameStatusDisplay = document.getElementById('game-status');
+        const btcPriceDisplay = document.getElementById('btc-price');
+        const ethPriceDisplay = document.getElementById('eth-price');
+        const placeBetBtn = document.getElementById('place-bet-btn');
+        const cashoutBtn = document.getElementById('cashout-btn');
+        const betAmountInput = document.getElementById('bet-amount');
+        const cryptoSelect = document.getElementById('crypto-select');
+        
+        // Game state
+        let socket = null;
+        let isConnected = false;
+        let isGameRunning = false;
+        let hasBet = false;
+        let currentMultiplier = 1.00;
+        
+        // Helper functions
+        function logMessage(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.classList.add('log-entry', type);
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logContainer.appendChild(entry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+        
+        function formatCurrency(amount) {
+            return new Intl.NumberFormat('en-US', {
+                style: 'currency',
+                currency: 'USD'
+            }).format(amount);
+        }
+        
+        function updateUI() {
+            // Update multiplier display
+            multiplierDisplay.textContent = currentMultiplier.toFixed(2) + 'x';
+            
+            // Update game status
+            if (!isConnected) {
+                gameStatusDisplay.textContent = 'Disconnected';
+                multiplierDisplay.className = 'multiplier';
+            } else if (isGameRunning) {
+                gameStatusDisplay.textContent = 'Game Running';
+                multiplierDisplay.className = 'multiplier running';
+            } else {
+                gameStatusDisplay.textContent = 'Waiting for next round';
+                multiplierDisplay.className = 'multiplier crashed';
+            }
+            
+            // Update buttons
+            connectBtn.disabled = isConnected;
+            disconnectBtn.disabled = !isConnected;
+            placeBetBtn.disabled = !isConnected || isGameRunning || hasBet;
+            cashoutBtn.disabled = !isConnected || !isGameRunning || !hasBet;
+        }
+        
+        // Socket event handlers
+        function setupSocketEvents() {
+            socket.on('connect', () => {
+                isConnected = true;
+                logMessage('Connected to server', 'success');
+                socket.emit('getGameState');
+                updateUI();
+            });
+            
+            socket.on('disconnect', () => {
+                isConnected = false;
+                logMessage('Disconnected from server', 'error');
+                updateUI();
+            });
+            
+            socket.on('connect_error', (error) => {
+                logMessage(`Connection error: ${error.message}`, 'error');
+            });
+            
+            socket.on('gameState', (data) => {
+                logMessage(`Received game state: ${JSON.stringify(data)}`);
+                
+                isGameRunning = data.isRunning || data.status === 'running';
+                currentMultiplier = data.multiplier || 1.00;
+                
+                // Update crypto prices if available
+                if (data.cryptoPrices) {
+                    btcPriceDisplay.textContent = formatCurrency(data.cryptoPrices.btc);
+                    ethPriceDisplay.textContent = formatCurrency(data.cryptoPrices.eth);
+                }
+                
+                updateUI();
+            });
+            
+            socket.on('cryptoPrices', (data) => {
+                logMessage(`Received crypto prices: ${JSON.stringify(data.prices)}`);
+                
+                btcPriceDisplay.textContent = formatCurrency(data.prices.btc);
+                ethPriceDisplay.textContent = formatCurrency(data.prices.eth);
+            });
+            
+            socket.on('gameUpdate', (data) => {
+                logMessage(`Game update: ${JSON.stringify(data)}`);
+                
+                switch (data.type) {
+                    case 'new_round':
+                        isGameRunning = false;
+                        currentMultiplier = 1.00;
+                        hasBet = false;
+                        logMessage(`New round starting in ${data.startingIn} seconds`, 'info');
+                        break;
+                        
+                    case 'round_started':
+                        isGameRunning = true;
+                        logMessage('Round started!', 'success');
+                        break;
+                        
+                    case 'multiplier_update':
+                        currentMultiplier = data.multiplier;
+                        break;
+                        
+                    case 'round_crashed':
+                        isGameRunning = false;
+                        logMessage(`Game crashed at ${data.crashPoint.toFixed(2)}x!`, 'error');
+                        hasBet = false;
+                        break;
+                        
+                    case 'bet_placed':
+                        logMessage(`Bet placed: ${formatCurrency(data.amount)} (${data.cryptoAmount} ${data.cryptoCurrency.toUpperCase()})`, 'success');
+                        hasBet = true;
+                        break;
+                        
+                    case 'cashout_success':
+                        logMessage(`Cashed out at ${data.multiplier}x! Won: ${formatCurrency(data.amount)}`, 'success');
+                        hasBet = false;
+                        break;
+                        
+                    case 'error':
+                        logMessage(`Error: ${data.message}`, 'error');
+                        break;
+                }
+                
+                updateUI();
+            });
+            
+            socket.on('bet_placed', (data) => {
+                logMessage(`${data.username} placed a bet: ${formatCurrency(data.amount)}`);
+            });
+            
+            socket.on('cashout', (data) => {
+                logMessage(`${data.username} cashed out at ${data.multiplier}x and won ${formatCurrency(data.amount)}!`);
+            });
+            
+            socket.on('error', (error) => {
+                logMessage(`Socket error: ${error.message}`, 'error');
+            });
+        }
+        
+        // Button event handlers
+        connectBtn.addEventListener('click', () => {
+            const serverUrl = serverUrlInput.value.trim();
+            
+            if (!serverUrl) {
+                logMessage('Please enter a valid server URL', 'error');
+                return;
+            }
+            
+            try {
+                logMessage(`Connecting to ${serverUrl}...`);
+                
+                socket = io(serverUrl, {
+                    transports: ['websocket', 'polling'],
+                    reconnection: true,
+                    reconnectionAttempts: 5,
+                    reconnectionDelay: 1000,
+                    timeout: 10000
+                });
+                
+                setupSocketEvents();
+            } catch (error) {
+                logMessage(`Failed to connect: ${error.message}`, 'error');
+            }
+        });
+        
+        disconnectBtn.addEventListener('click', () => {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+                isConnected = false;
+                updateUI();
+                logMessage('Disconnected from server');
+            }
+        });
+        
+        placeBetBtn.addEventListener('click', () => {
+            if (!socket || !isConnected) {
+                logMessage('Not connected to server', 'error');
+                return;
+            }
+            
+            const amount = parseFloat(betAmountInput.value);
+            if (isNaN(amount) || amount <= 0) {
+                logMessage('Please enter a valid bet amount', 'error');
+                return;
+            }
+            
+            const cryptoCurrency = cryptoSelect.value;
+            
+            try {
+                socket.emit('place_bet', {
+                    amount,
+                    cryptoCurrency
+                });
+                
+                logMessage(`Placing bet: ${formatCurrency(amount)} in ${cryptoCurrency.toUpperCase()}`);
+            } catch (error) {
+                logMessage(`Error placing bet: ${error.message}`, 'error');
+            }
+        });
+        
+        cashoutBtn.addEventListener('click', () => {
+            if (!socket || !isConnected) {
+                logMessage('Not connected to server', 'error');
+                return;
+            }
+            
+            if (!isGameRunning) {
+                logMessage('Game is not running', 'error');
+                return;
+            }
+            
+            if (!hasBet) {
+                logMessage('No active bet to cash out', 'error');
+                return;
+            }
+            
+            try {
+                socket.emit('cashout');
+                logMessage(`Attempting to cash out at ${currentMultiplier.toFixed(2)}x`);
+            } catch (error) {
+                logMessage(`Error cashing out: ${error.message}`, 'error');
+            }
+        });
+        
+        // Initialize UI
+        updateUI();
+    </script>
+</body>
+</html>

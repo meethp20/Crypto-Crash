@@ -4,22 +4,57 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const CACHE_DURATION = 10000; // 10 seconds cache
-const MAX_RETRIES = 3;
+// Constants for API interactions
+const CACHE_DURATION = 30000; // 30 seconds cache (increased from 10s)
+const MAX_RETRIES = 5; // Increased from 3
 const RETRY_DELAY = 1000; // 1 second
+const RATE_LIMIT_DELAY = 60000; // 1 minute delay if rate limited
 
+// API URLs
 const COINGECKO_API_URL = 'https://api.coingecko.com/api/v3';
+const COINMARKETCAP_API_URL = 'https://pro-api.coinmarketcap.com/v1';
 
+/**
+ * CryptoService class handles all cryptocurrency-related operations
+ * including price fetching, caching, and currency conversions.
+ */
 class CryptoService {
   constructor() {
+    // Price caching mechanism
     this.priceCache = new Map();
     this.lastFetchTime = new Map();
     this.fetchPromises = new Map();
+    
+    // Current prices
     this.prices = {
       btc: 0,
       eth: 0
     };
+    
+    // API state tracking
     this.lastUpdate = null;
+    this.rateLimitHit = false;
+    this.rateLimitResetTime = null;
+    this.apiFailures = {
+      coingecko: 0,
+      coinmarketcap: 0
+    };
+    
+    // Initialize with default values
+    this.initializeDefaultPrices();
+  }
+  
+  /**
+   * Initialize default prices from a local source or reasonable estimates
+   * This ensures the app can function even if APIs are temporarily unavailable
+   */
+  initializeDefaultPrices() {
+    // Default prices based on recent market values (as of May 2023)
+    this.prices = {
+      btc: 30000, // Default BTC price in USD
+      eth: 2000   // Default ETH price in USD
+    };
+    this.lastUpdate = Date.now();
   }
 
   async getPrice(cryptoCurrency) {
@@ -53,25 +88,103 @@ class CryptoService {
     }
   }
 
-  async fetchPriceWithRetry(cryptoCurrency, retryCount = 0) {
+  /**
+   * Fetch cryptocurrency price with retry logic and fallback mechanisms
+   * @param {string} cryptoCurrency - The cryptocurrency symbol (e.g., 'btc', 'eth')
+   * @param {number} retryCount - Current retry attempt count
+   * @param {boolean} useBackupApi - Whether to use the backup API
+   * @returns {Promise<number>} The price in USD
+   */
+  async fetchPriceWithRetry(cryptoCurrency, retryCount = 0, useBackupApi = false) {
+    // If we're rate limited, wait until reset time
+    if (this.rateLimitHit && Date.now() < this.rateLimitResetTime) {
+      console.log(`Rate limit in effect, using cached data for ${cryptoCurrency}`);
+      
+      // Use cached price if available
+      if (this.priceCache.has(cryptoCurrency.toLowerCase())) {
+        return this.priceCache.get(cryptoCurrency.toLowerCase());
+      }
+      
+      // Otherwise use default price estimates
+      return cryptoCurrency.toLowerCase() === 'btc' ? this.prices.btc : this.prices.eth;
+    }
+    
     try {
-      const response = await axios.get('https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest', {
+      let price;
+      
+      // Try CoinGecko first if not using backup API and if we haven't had too many failures
+      if (!useBackupApi && this.apiFailures.coingecko < 3) {
+        try {
+          const response = await axios.get(`${COINGECKO_API_URL}/simple/price`, {
+            params: {
+              ids: cryptoCurrency.toLowerCase() === 'btc' ? 'bitcoin' : 'ethereum',
+              vs_currencies: 'usd'
+            },
+            timeout: 5000 // 5 second timeout
+          });
+          
+          // Extract price based on cryptocurrency
+          if (cryptoCurrency.toLowerCase() === 'btc') {
+            price = response.data.bitcoin.usd;
+          } else {
+            price = response.data.ethereum.usd;
+          }
+          
+          // Reset failure counter for CoinGecko
+          this.apiFailures.coingecko = 0;
+          return price;
+        } catch (coingeckoError) {
+          // Increment failure counter for CoinGecko
+          this.apiFailures.coingecko++;
+          console.warn(`CoinGecko API error (failure #${this.apiFailures.coingecko}):`, coingeckoError.message);
+          
+          // Check for rate limiting
+          if (coingeckoError.response && coingeckoError.response.status === 429) {
+            this.rateLimitHit = true;
+            this.rateLimitResetTime = Date.now() + RATE_LIMIT_DELAY;
+            console.warn(`CoinGecko rate limit hit, will reset at ${new Date(this.rateLimitResetTime).toISOString()}`);
+          }
+          
+          // Fall through to CoinMarketCap
+        }
+      }
+      
+      // Try CoinMarketCap as primary or fallback
+      const response = await axios.get(`${COINMARKETCAP_API_URL}/cryptocurrency/quotes/latest`, {
         headers: {
           'X-CMC_PRO_API_KEY': process.env.COINMARKETCAP_API_KEY
         },
         params: {
           symbol: cryptoCurrency.toUpperCase(),
           convert: 'USD'
-        }
+        },
+        timeout: 5000 // 5 second timeout
       });
 
-      const price = response.data.data[cryptoCurrency.toUpperCase()].quote.USD.price;
+      price = response.data.data[cryptoCurrency.toUpperCase()].quote.USD.price;
+      
+      // Reset failure counter for CoinMarketCap
+      this.apiFailures.coinmarketcap = 0;
       return price;
     } catch (error) {
+      // Check for rate limiting
+      if (error.response && error.response.status === 429) {
+        this.rateLimitHit = true;
+        this.rateLimitResetTime = Date.now() + RATE_LIMIT_DELAY;
+        console.warn(`API rate limit hit, will reset at ${new Date(this.rateLimitResetTime).toISOString()}`);
+      }
+      
+      // Increment failure counter for CoinMarketCap
+      this.apiFailures.coinmarketcap++;
+      
+      // Retry logic
       if (retryCount < MAX_RETRIES) {
-        console.warn(`Retry ${retryCount + 1}/${MAX_RETRIES} for ${cryptoCurrency}`);
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY * (retryCount + 1)));
-        return this.fetchPriceWithRetry(cryptoCurrency, retryCount + 1);
+        const delay = RETRY_DELAY * Math.pow(2, retryCount); // Exponential backoff
+        console.warn(`Retry ${retryCount + 1}/${MAX_RETRIES} for ${cryptoCurrency} in ${delay}ms`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        
+        // If we've tried the primary API and failed, try the backup
+        return this.fetchPriceWithRetry(cryptoCurrency, retryCount + 1, !useBackupApi);
       }
 
       // If we still have a cached price, use it as fallback
@@ -79,8 +192,10 @@ class CryptoService {
         console.warn(`Using cached price for ${cryptoCurrency} due to API error`);
         return this.priceCache.get(cryptoCurrency.toLowerCase());
       }
-
-      throw new Error(`Failed to fetch price for ${cryptoCurrency} after ${MAX_RETRIES} retries`);
+      
+      // Last resort: use default estimates
+      console.warn(`Using default price estimate for ${cryptoCurrency} after all retries failed`);
+      return cryptoCurrency.toLowerCase() === 'btc' ? this.prices.btc : this.prices.eth;
     }
   }
 

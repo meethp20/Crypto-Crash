@@ -15,13 +15,17 @@ interface GameContextType {
   };
 }
 
-// Try ports in sequence
-const BACKEND_PORTS = [5001, 5002, 5003];
-let currentPortIndex = 0;
-
-const tryConnect = (portIndex: number) => {
-  const port = BACKEND_PORTS[portIndex];
-  return `http://localhost:${port}`;
+// Backend connection configuration
+const BACKEND_URL = 'http://localhost:5001';
+const SOCKET_OPTIONS = {
+  transports: ['websocket', 'polling'],  // Try websocket first, fall back to polling
+  reconnection: true,
+  reconnectionAttempts: 10,
+  reconnectionDelay: 1000,
+  reconnectionDelayMax: 5000,
+  timeout: 20000,
+  autoConnect: true,
+  forceNew: true
 };
 
 const GameContext = createContext<GameContextType | undefined>(undefined);
@@ -41,28 +45,13 @@ export const GameProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     const connectToServer = () => {
-      const url = tryConnect(currentPortIndex);
-      console.log(`Attempting to connect to ${url}`);
+      console.log(`Attempting to connect to ${BACKEND_URL}`);
       
-      const newSocket = io(url, {
-        transports: ['websocket'],
-        reconnection: true,
-        reconnectionAttempts: 5,
-        reconnectionDelay: 1000,
-        autoConnect: true,
-        timeout: 10000
-      });
+      const newSocket = io(BACKEND_URL, SOCKET_OPTIONS);
 
       newSocket.on('connect_error', (error) => {
         console.error('Connection error:', error);
-        if (currentPortIndex < BACKEND_PORTS.length - 1) {
-          currentPortIndex++;
-          console.log(`Trying next port: ${BACKEND_PORTS[currentPortIndex]}`);
-          newSocket.close();
-          connectToServer();
-        } else {
-          setError('Failed to connect to game server. Please try again later.');
-        }
+        setError('Failed to connect to game server. Please try again later.');
       });
 
       newSocket.on('connect', () => {
