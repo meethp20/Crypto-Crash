@@ -2,6 +2,9 @@
 
 This is the backend server for the Crypto Crash game, built with Node.js, Express, MongoDB, and WebSocket.
 
+[![Node.js Version](https://img.shields.io/badge/node-%3E%3D14.0.0-brightgreen)](https://nodejs.org/)
+[![Express](https://img.shields.io/badge/express-4.x-blue)](https://expressjs.com/)
+
 ## Features
 
 - Real-time game updates using WebSocket
@@ -95,10 +98,45 @@ The application uses a centralized error handling middleware. All errors are log
 - Rate limiting
 - Environment variables for sensitive data
 
+## Testing
+
+The project uses a testing framework for unit and integration tests. To run tests:
+
+```bash
+# Run all tests
+npm test
+
+# Run tests with coverage report
+npm run test:coverage
+```
+
+## Troubleshooting
+
+### Common Issues
+
+1. **MongoDB Connection Error**
+   - Ensure MongoDB is running locally or update the connection string in your .env file
+   - Check network connectivity if using a remote MongoDB instance
+
+2. **API Key Issues**
+   - Verify your CoinMarketCap API key is valid and has sufficient quota
+   - Make sure the API key is correctly set in your .env file
+
+3. **WebSocket Connection Problems**
+   - Check that the WebSocket server is running on the specified port
+   - Ensure CORS settings are correctly configured for your frontend
+
 ## Contributing
 
 1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a new Pull Request 
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Create a new Pull Request
+
+### Coding Standards
+
+- Follow the existing code style and structure
+- Write meaningful commit messages
+- Add appropriate comments and documentation
+- Write tests for new features

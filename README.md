@@ -2,6 +2,10 @@
 
 A real-time multiplayer crypto crash game with WebSocket integration and cryptocurrency conversions.
 
+[![GitHub issues](https://img.shields.io/github/issues/your-username/crypto-crash)](https://github.com/your-username/crypto-crash/issues)
+[![GitHub stars](https://img.shields.io/github/stars/your-username/crypto-crash)](https://github.com/your-username/crypto-crash/stargazers)
+[![GitHub license](https://img.shields.io/github/license/your-username/crypto-crash)](https://github.com/your-username/crypto-crash/blob/main/LICENSE)
+
 ## Features
 
 - Real-time multiplayer game with WebSocket updates
@@ -21,7 +25,7 @@ A real-time multiplayer crypto crash game with WebSocket integration and cryptoc
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/your-username/crypto-crash.git
 cd crypto-crash
 ```
 
@@ -112,6 +116,44 @@ npm test
 npm run seed
 ```
 
+## Project Structure
+
+```
+crypto-crash/
+├── backend/           # Node.js Express backend
+│   ├── controllers/   # Route controllers
+│   ├── models/        # Database models
+│   ├── routes/        # API routes
+│   ├── services/      # Business logic
+│   ├── utils/         # Utility functions
+│   └── websockets/    # WebSocket handlers
+└── frontend/          # Frontend application (coming soon)
+```
+
+## Frontend Setup
+
+The frontend component is currently under development. Stay tuned for updates.
+
+## Testing
+
+```bash
+# Run backend tests
+cd backend
+npm test
+```
+
+## Contributing
+
+We welcome contributions to improve the Crypto Crash Game! Here's how you can contribute:
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+Please make sure to update tests as appropriate and adhere to the existing coding style.
+
 ## License
 
-MIT 
+MIT
