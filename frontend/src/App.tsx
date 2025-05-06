@@ -10,10 +10,14 @@ function App() {
     <ChakraProvider theme={theme}>
       <GameProvider>
         <div className="app">
-          <div className="container">
-            <h1 className="title">Crypto Crash</h1>
-            <GameArea />
-            <WalletPanel />
+          <h1 className="title">Crypto Crash</h1>
+          <div className="game-wrapper">
+            <div className="game-container">
+              <GameArea />
+            </div>
+            <div className="side-panel">
+              <WalletPanel />
+            </div>
           </div>
         </div>
       </GameProvider>
